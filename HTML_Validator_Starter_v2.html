@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HTML Validator & Starter</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #111318; color: #eef1f6; margin: 0; padding: 1rem; }
+    textarea { width: 100%; min-height: 180px; background: #191d24; color: #eef1f6; border: 1px solid #2e3542; border-radius: 8px; padding: 0.75rem; font-family: ui-monospace, monospace; font-size: 0.9rem; box-sizing: border-box; }
+    .bar { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 0.75rem 0; align-items: center; }
+    input[type="text"] { background: #191d24; color: #eef1f6; border: 1px solid #2e3542; border-radius: 8px; padding: 0.6rem 0.75rem; font-size: 0.9rem; min-width: 210px; flex: 1; }
+    button { background: #3b82f6; color: #fff; border: none; border-radius: 8px; padding: 0.65rem 1rem; font-weight: 600; cursor: pointer; }
+    button.paste { background: #10b981; }
+    button.secondary { background: #262c38; }
+    .log { background: #161a20; border: 1px solid #29303d; border-radius: 8px; padding: 0.75rem; font-size: 0.88rem; color: #b8c2d4; white-space: pre-wrap; }
+    iframe { width: 100%; height: 360px; border: 1px solid #2e3542; border-radius: 8px; background: #fff; margin-top: 0.75rem; }
+  </style>
+</head>
+<body>
+  <h2>HTML Validator &amp; Starter</h2>
+  <textarea id="input" placeholder="Text oder HTML hier einfügen oder über Zwischenablage laden..."></textarea>
+
+  <div class="bar">
+    <button type="button" class="paste" onclick="pasteFromClipboard()">📋 Aus Zwischenablage &amp; prüfen</button>
+    <input type="text" id="filename" placeholder="Dateiname (z.B. kuenstler-prompt.html)" />
+    <button type="button" onclick="runValidate()">Prüfen &amp; Reparieren</button>
+    <button type="button" class="secondary" onclick="startLive()">Direkt starten</button>
+    <button type="button" class="secondary" onclick="downloadHtml()">Als .html speichern</button>
+  </div>
+
+  <div id="log" class="log">Bereit. Tippe auf „Aus Zwischenablage & prüfen“, um den übergebenen Text zu laden.</div>
+  <iframe id="preview" title="Vorschau"></iframe>
+
+  <script>
+    const inputEl = document.getElementById("input");
+    const filenameEl = document.getElementById("filename");
+    const logEl = document.getElementById("log");
+    const previewEl = document.getElementById("preview");
+
+    function slugify(str) {
+      return (str || "")
+        .toLowerCase()
+        .replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss")
+        .replace(/[^a-z0-9_-]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    }
+
+    async function pasteFromClipboard() {
+      try {
+        if (navigator.clipboard && navigator.clipboard.readText) {
+          const clipText = await navigator.clipboard.readText();
+          if (clipText && clipText.trim()) {
+            inputEl.value = clipText;
+            runValidate();
+            return;
+          }
+        }
+        throw new Error("Kein direkter Zugriff oder Zwischenablage leer.");
+      } catch (e) {
+        inputEl.focus();
+        logEl.textContent = "Hinweis: Bitte einmal ins Textfeld tippen und „Einsetzen“ wählen (iOS schützt lokale Dateien vor automatischem Auslesen), danach „Prüfen & Reparieren“ drücken.";
+      }
+    }
+
+    function repairContent(raw) {
+      const notes = [];
+      let text = (raw || "").trim();
+      if (!text) return { html: "", notes: ["Kein Inhalt vorhanden."] };
+
+      if (/^```(?:html)?/i.test(text)) {
+        text = text.replace(/^```(?:html)?\s*/i, "").replace(/\s*```$/, "");
+        notes.push("Markdown-Codezaun (```) entfernt.");
+      }
+
+      const hasHtmlTags = /<\/?[a-z][\s\S]*>/i.test(text);
+      if (!hasHtmlTags) {
+        const escaped = text
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/\n{2,}/g, "</p><p>")
+          .replace(/\n/g, "<br>");
+        notes.push("Reinen Text erkannt und in Absätze (<p>/<br>) umgewandelt.");
+        text = `<main><p>${escaped}</p></main>`;
+      }
+
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(text, "text/html");
+
+      const existingTitle = doc.querySelector("title")?.textContent?.trim();
+      const firstH1 = doc.querySelector("h1")?.textContent?.trim();
+      const finalTitle = existingTitle || firstH1 || "Gestartete Seite";
+
+      const headStyles = Array.from(doc.querySelectorAll("head style, head link[rel='stylesheet']"))
+        .map(el => el.outerHTML)
+        .join("\n  ");
+
+      if (headStyles) {
+        notes.push("Vorhandenes CSS (<style>/<link>) erhalten.");
+      } else {
+        notes.push("Hinweis: Im Quellcode war kein <style>-Block enthalten.");
+      }
+
+      const bodyContent = doc.body ? doc.body.innerHTML.trim() : "";
+
+      const cleanDoc = `<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${finalTitle.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</title>
+  ${headStyles}
+</head>
+<body>
+${bodyContent}
+</body>
+</html>`;
+
+      if (!filenameEl.value.trim()) {
+        const base = slugify(firstH1 || existingTitle) || "prompt-seite";
+        filenameEl.value = base + ".html";
+      }
+
+      notes.push("Vollständiges HTML5-Grundgerüst mit UTF-8 sichergestellt.");
+      return { html: cleanDoc, notes };
+    }
+
+    function runValidate() {
+      const { html, notes } = repairContent(inputEl.value);
+      if (!html) return;
+      inputEl.value = html;
+      logEl.textContent = "✔ Geprüft & repariert:\n- " + notes.join("\n- ");
+      return html;
+    }
+
+    function startLive() {
+      const html = runValidate();
+      if (!html) return;
+      const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      previewEl.src = url;
+      window.open(url, "_blank");
+    }
+
+    function downloadHtml() {
+      const html = runValidate();
+      if (!html) return;
+      let name = filenameEl.value.trim() || "prompt-seite.html";
+      if (!name.toLowerCase().endsWith(".html")) name += ".html";
+      filenameEl.value = name;
+
+      const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      logEl.textContent += `\n✔ Download für '${name}' ausgelöst.`;
+    }
+
+    if (location.hash.startsWith("#b64=")) {
+      try {
+        const b64 = decodeURIComponent(location.hash.slice(5));
+        const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+        const decoded = new TextDecoder("utf-8").decode(bytes);
+        inputEl.value = decoded;
+        runValidate();
+      } catch (e) {
+        logEl.textContent = "Hinweis: Übergebene Daten konnten nicht automatisch dekodiert werden.";
+      }
+    }
+  </script>
+</body>
+</html>
